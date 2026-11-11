@@ -4,8 +4,8 @@ The workflow in `.github/workflows/terraform.yml` authenticates to AWS with GitH
 
 | Environment | Repository variable | Runs on |
 |---|---|---|
-| dev | `AWS_ROLE_ARN_DEV` | pull request |
-| stag | `AWS_ROLE_ARN_STAG` | pull request |
+| dev | `AWS_ROLE_ARN_DEV` | pull request, or manual run |
+| stag | `AWS_ROLE_ARN_STAG` | pull request, or manual run |
 | prod | `AWS_ROLE_ARN_PROD` | push to `main`, or manual run from `main` |
 
 The role ARN has the form `arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>`. Store it as a repository **variable** (not a secret).
@@ -21,9 +21,9 @@ Create once per AWS account:
 
 One role per environment. Each trust policy pins the audience and the subject claim of the workflow run.
 
-### dev and stag
+### dev
 
-Pull requests from this repository present the subject `repo:riyan-ahmed/terraform-aws-multi-environment:pull_request`. Use this policy for both roles, each in its own role.
+Trusts pull requests from this repository and the `main` branch (a manual run started from `main` presents the `main` subject).
 
 ```json
 {
@@ -38,7 +38,10 @@ Pull requests from this repository present the subject `repo:riyan-ahmed/terrafo
       "Condition": {
         "StringEquals": {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": "repo:riyan-ahmed/terraform-aws-multi-environment:pull_request"
+          "token.actions.githubusercontent.com:sub": [
+            "repo:riyan-ahmed/terraform-aws-multi-environment:pull_request",
+            "repo:riyan-ahmed/terraform-aws-multi-environment:ref:refs/heads/main"
+          ]
         }
       }
     }
@@ -46,7 +49,37 @@ Pull requests from this repository present the subject `repo:riyan-ahmed/terrafo
 }
 ```
 
-The workflow runs dev and stag only on `pull_request`, so this subject is enough. If you also want to run them from `main` (push or manual dispatch), the workflow condition would have to change as well, and you would add the `main` subject shown for prod to the `sub` list.
+**Note:** the workflow runs dev on `pull_request` and on a manual run with `environment=dev`; it does not run dev on a push to `main`. A manual run from any branch other than `main` is not blocked by the workflow but is rejected by this trust policy. The `main` subject has not been tested against AWS.
+
+### stag
+
+Trusts pull requests from this repository and the `main` branch (a manual run started from `main` presents the `main` subject), the same as dev.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": [
+            "repo:riyan-ahmed/terraform-aws-multi-environment:pull_request",
+            "repo:riyan-ahmed/terraform-aws-multi-environment:ref:refs/heads/main"
+          ]
+        }
+      }
+    }
+  ]
+}
+```
+
+The `main` subject lets a manual run of stag from `main` assume this role. It has not been tested against AWS.
 
 ### prod
 
@@ -77,24 +110,37 @@ A push to `main` and a `workflow_dispatch` run started from `main` both present 
 
 ## 3. State access policy (one per role, own key only)
 
-Attach to each role as an inline or managed policy. The example is for **dev**; for stag and prod, replace `dev/` with `stag/` or `prod/`.
+Attach each policy to its own role only. Each one is limited to that environment's state key.
 
-Terraform's S3 backend with `use_lockfile = true` writes a lock object named `<key>.tflock` next to the state and deletes it when it releases the lock, so the role needs `s3:DeleteObject` on that one object.
+Terraform's S3 backend with `use_lockfile = true` writes a lock object named `<key>.tflock` next to the state and deletes it when it releases the lock, so each role needs `s3:DeleteObject` on that one object.
+
+### dev
 
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "ListStateBucket",
+      "Sid": "ListOwnStatePrefix",
       "Effect": "Allow",
       "Action": "s3:ListBucket",
-      "Resource": "arn:aws:s3:::riyan-terraform-state-2026"
+      "Resource": "arn:aws:s3:::riyan-terraform-state-2026",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "dev",
+            "dev/*"
+          ]
+        }
+      }
     },
     {
       "Sid": "ReadWriteOwnStateAndLock",
       "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
       "Resource": "arn:aws:s3:::riyan-terraform-state-2026/dev/terraform.tfstate*"
     },
     {
@@ -107,10 +153,89 @@ Terraform's S3 backend with `use_lockfile = true` writes a lock object named `<k
 }
 ```
 
+### stag
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListOwnStatePrefix",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::riyan-terraform-state-2026",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "stag",
+            "stag/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ReadWriteOwnStateAndLock",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::riyan-terraform-state-2026/stag/terraform.tfstate*"
+    },
+    {
+      "Sid": "DeleteOwnLockOnly",
+      "Effect": "Allow",
+      "Action": "s3:DeleteObject",
+      "Resource": "arn:aws:s3:::riyan-terraform-state-2026/stag/terraform.tfstate.tflock"
+    }
+  ]
+}
+```
+
+### prod
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListOwnStatePrefix",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::riyan-terraform-state-2026",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "prod",
+            "prod/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ReadWriteOwnStateAndLock",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::riyan-terraform-state-2026/prod/terraform.tfstate*"
+    },
+    {
+      "Sid": "DeleteOwnLockOnly",
+      "Effect": "Allow",
+      "Action": "s3:DeleteObject",
+      "Resource": "arn:aws:s3:::riyan-terraform-state-2026/prod/terraform.tfstate.tflock"
+    }
+  ]
+}
+```
+
 Notes:
 
-- `terraform plan` does not change the state, but it does create and delete the lock object, which is why `PutObject` and `DeleteObject` are needed. `GetObject`/`PutObject` on `dev/terraform.tfstate*` also cover the state file itself.
-- `s3:ListBucket` is granted on the whole bucket. It could be narrowed with an `s3:prefix` condition, but that has not been tested against this backend, so it is left out.
+- `terraform plan` does not change the state, but it does create and delete the lock object, which is why `PutObject` and `DeleteObject` are needed. `GetObject`/`PutObject` on `<env>/terraform.tfstate*` also cover the lock object and the state file itself.
+- `s3:DeleteObject` is granted on the lock object only, not on the state file.
+- `s3:ListBucket` is limited to the environment's own prefix (`<env>` and `<env>/*`) with an `s3:prefix` condition. **This condition is untested.** It has not been checked against a real `terraform init`/`plan` with this backend. If init fails with `AccessDenied` on `ListObjectsV2`, the backend is listing a prefix outside these two values; widen the condition or remove it.
 - The bootstrap bucket uses default S3 encryption. If you switch it to a customer-managed KMS key, each role also needs `kms:Decrypt` and `kms:GenerateDataKey` on that key.
 
 ## 4. Read-only EC2 and VPC policy (all roles)

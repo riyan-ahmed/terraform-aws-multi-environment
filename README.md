@@ -146,8 +146,8 @@ A GitHub Actions workflow (`.github/workflows/terraform.yml`, with the per-envir
 
 | Environment | Runs on |
 |---|---|
-| dev, stag | Pull requests from this repository that change `environments/**` or `modules/**` |
-| prod | A push to `main` that changes those paths, or a manual run (`workflow_dispatch`) started from `main`. Never on pull requests |
+| dev, stag | Pull requests from this repository that change `environments/**` or `modules/**`, or a manual run (`workflow_dispatch`) with that environment selected |
+| prod | A push to `main` that changes those paths, or a manual run (`workflow_dispatch`) with `environment=prod` started from `main`. Never on pull requests |
 
 After each plan, the workflow counts the planned creates, updates and deletes and uploads them as a `plan-summary-<env>` artifact (`summary-<env>.json`). The counts are also shown in the run summary.
 
