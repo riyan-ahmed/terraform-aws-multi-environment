@@ -1,0 +1,57 @@
+name: Terraform
+
+on:
+  pull_request:
+    paths:
+      - "environments/**"
+      - "modules/**"
+  push:
+    branches: [main]
+    paths:
+      - "environments/**"
+      - "modules/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # dev and stag: pull requests from this repository only (forks get no OIDC token or secrets).
+  plan-dev-stag:
+    name: plan-${{ matrix.environment }}
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - environment: dev
+            suffix: DEV
+          - environment: stag
+            suffix: STAG
+    uses: ./.github/workflows/terraform-env.yml
+    with:
+      environment: ${{ matrix.environment }}
+      suffix: ${{ matrix.suffix }}
+    secrets:
+      tf_vars: ${{ matrix.environment == 'dev' && secrets.TF_VARS_DEV || secrets.TF_VARS_STAG }}
+
+  # prod: never on pull_request. Only a push to main, or a manual run started from main.
+  plan-prod:
+    name: plan-prod
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/terraform-env.yml
+    with:
+      environment: prod
+      suffix: PROD
+    secrets:
+      tf_vars: ${{ secrets.TF_VARS_PROD }}
