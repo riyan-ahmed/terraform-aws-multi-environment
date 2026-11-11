@@ -139,3 +139,36 @@ This project demonstrates practical use of Terraform providers, resources, varia
 ## Key Learning Outcomes
 
 Building this project strengthened my understanding of Infrastructure as Code, AWS networking, reusable Terraform modules, multi-environment infrastructure, remote state management, dependency handling, and safer infrastructure deployment workflows.
+
+## CI
+
+A GitHub Actions workflow (`.github/workflows/terraform.yml`, with the per-environment steps in `.github/workflows/terraform-env.yml`) runs `terraform fmt -check -recursive`, `terraform init`, `terraform validate` and `terraform plan` for each environment. It uses Terraform 1.17.1 and never runs `terraform apply`.
+
+| Environment | Runs on |
+|---|---|
+| dev, stag | Pull requests from this repository that change `environments/**` or `modules/**`, or a manual run (`workflow_dispatch`) with that environment selected |
+| prod | A push to `main` that changes those paths, or a manual run (`workflow_dispatch`) with `environment=prod` started from `main`. Never on pull requests |
+
+After each plan, the workflow counts the planned creates, updates and deletes and uploads them as a `plan-summary-<env>` artifact (`summary-<env>.json`). The counts are also shown in the run summary.
+
+### Repository variables
+
+Authentication is AWS OIDC, so no AWS access keys are stored. Each environment assumes its own role:
+
+- `AWS_ROLE_ARN_DEV`
+- `AWS_ROLE_ARN_STAG`
+- `AWS_ROLE_ARN_PROD`
+
+### Repository secrets
+
+The `region`, `environment` and `instance_type` variables have no defaults and `*.tfvars` files are not committed. For each environment, the workflow writes the contents of a secret to a temporary tfvars file, passes it to `plan` and deletes it afterwards:
+
+- `TF_VARS_DEV`
+- `TF_VARS_STAG`
+- `TF_VARS_PROD`
+
+Each secret holds the contents of a normal tfvars file, for example `region = "..."`, `environment = "..."` and `instance_type = "..."`. If a secret is missing, the workflow logs a warning and the plan fails on the missing variables.
+
+### AWS setup
+
+The OIDC provider, trust policies and state-access policies are described in [docs/ci-iam.md](docs/ci-iam.md). The workflow does not create any of them.
